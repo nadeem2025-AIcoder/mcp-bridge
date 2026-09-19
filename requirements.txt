@@ -1,0 +1,4 @@
+mcp[cli]
+requests
+python-telegram-bot
+uvicorn
