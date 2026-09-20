@@ -62,7 +62,8 @@ def publish_to_linkedin(exact_text: str) -> str:
             return f"فشل النشر ({response.status_code}): {response.text}"
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
-
+import os
+import uvicorn
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
