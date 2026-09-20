@@ -13,7 +13,6 @@ LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 
 app = FastAPI(title="Guadara-Telegram-LinkedIn-MCP")
 
-# تمكين CORS لجميع الواجهات والخوادم
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,8 +38,19 @@ async def run_get_latest_telegram_post() -> str:
     except Exception as e:
         return f"حدث خطأ أثناء الاتصال بتليجرام: {str(e)}"
 
+async def run_post_to_telegram(message_text: str) -> str:
+    """نشر نص أو ملخص مباشرة إلى قناة تليجرام عبر البوت."""
+    if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
+        return "خطأ: بيانات تليجرام غير مكتملة في متغيرات البيئة."
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        msg = await bot.send_message(chat_id=CHANNEL_ID, text=message_text)
+        return f"تم النشر في قناة تليجرام بنجاح! معرف الرسالة: {msg.message_id}"
+    except Exception as e:
+        return f"حدث خطأ أثناء النشر في تليجرام: {str(e)}"
+
 def run_publish_to_linkedin(exact_text: str) -> str:
-    """نشر النص حرفياً إلى لينكد إن مع تشخيص واستخراج المعرف بدقة."""
+    """نشر النص حرفياً إلى لينكد إن."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز الوصول للينكد إن غير متوفر."
     
@@ -48,7 +58,6 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"
     }
 
-    # محاولة استخراج المعرف تلقائياً عبر نقطة وصول /v2/userinfo
     sub = None
     try:
         userinfo_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers)
@@ -57,7 +66,6 @@ def run_publish_to_linkedin(exact_text: str) -> str:
     except Exception:
         pass
 
-    # محاولة ثانية عبر /v2/me في حال عدم تفعيل OpenID
     if not sub:
         try:
             me_resp = requests.get("https://api.linkedin.com/v2/me", headers=auth_headers)
@@ -66,7 +74,6 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         except Exception:
             pass
 
-    # الاعتماد على المتغير اليدوي إذا تعذر الاستخراج التلقائي
     if not sub:
         sub = LINKEDIN_USER_SUB
 
@@ -100,7 +107,7 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         if response.status_code == 201:
             return "تم النشر بنجاح على لينكد إن!"
         else:
-            return f"فشل النشر ({response.status_code}): المعرّف المستخدم [{author_urn}] - تفاصيل الرد: {response.text}"
+            return f"فشل النشر ({response.status_code}): {response.text}"
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
 
@@ -108,11 +115,25 @@ def run_publish_to_linkedin(exact_text: str) -> str:
 TOOLS_DEFINITION = [
     {
         "name": "get_latest_telegram_post",
-        "description": "يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام دون أي تعديل.",
+        "description": "يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام.",
         "inputSchema": {
             "type": "object",
             "properties": {},
             "required": []
+        }
+    },
+    {
+        "name": "post_to_telegram",
+        "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_text": {
+                    "type": "string",
+                    "description": "النص أو التلخيص المراد نشره في قناة تليجرام."
+                }
+            },
+            "required": ["message_text"]
         }
     },
     {
@@ -134,13 +155,11 @@ TOOLS_DEFINITION = [
 @app.get("/")
 @app.get("/mcp")
 async def health_check():
-    """استجابة فحص الجاهزية والصحة"""
     return {"status": "ok", "service": "Telegram-LinkedIn MCP Server"}
 
 @app.post("/")
 @app.post("/mcp")
 async def handle_mcp_rpc(request: Request):
-    """معالج طلبات بروتوكول MCP JSON-RPC المتوافق مع Gemini Spark"""
     try:
         body = await request.json()
     except Exception:
@@ -149,7 +168,6 @@ async def handle_mcp_rpc(request: Request):
     req_id = body.get("id")
     method = body.get("method")
 
-    # مصافحة التهيئة الأولية
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -161,12 +179,11 @@ async def handle_mcp_rpc(request: Request):
                 },
                 "serverInfo": {
                     "name": "GuadaraBridge",
-                    "version": "1.0.0"
+                    "version": "1.1.0"
                 }
             }
         }
 
-    # قائمة الأدوات
     elif method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -176,7 +193,6 @@ async def handle_mcp_rpc(request: Request):
             }
         }
 
-    # استدعاء وتنفيذ الأداة
     elif method == "tools/call":
         params = body.get("params", {})
         tool_name = params.get("name")
@@ -184,6 +200,9 @@ async def handle_mcp_rpc(request: Request):
 
         if tool_name == "get_latest_telegram_post":
             result_text = await run_get_latest_telegram_post()
+        elif tool_name == "post_to_telegram":
+            msg_text = args.get("message_text", "")
+            result_text = await run_post_to_telegram(msg_text)
         elif tool_name == "publish_to_linkedin":
             post_text = args.get("exact_text", "")
             result_text = run_publish_to_linkedin(post_text)
