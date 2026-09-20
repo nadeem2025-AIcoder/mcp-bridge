@@ -4,13 +4,14 @@ import uvicorn
 from telegram import Bot
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 
-# تعطيل فحص الـ Host السحابي للسماح بنطاقات Railway الخارجية
 mcp = FastMCP(
     "Telegram-LinkedIn-Mirror-Bridge",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
@@ -71,4 +72,15 @@ def publish_to_linkedin(exact_text: str) -> str:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
+    app = mcp.sse_app()
+    
+    # دعم ترويسات CORS الكاملة لكي يقبل متصفح Spark الاتصال
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
