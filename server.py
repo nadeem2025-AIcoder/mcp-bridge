@@ -1,10 +1,10 @@
 import os
 import requests
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from telegram import Bot
-import uvicorn
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
@@ -13,7 +13,7 @@ LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 
 app = FastAPI(title="Guadara-Telegram-LinkedIn-MCP")
 
-# تمكين CORS بالكامل لجميع خوادم وواجهات Google
+# تمكين CORS لجميع الواجهات والخوادم
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,8 +23,9 @@ app.add_middleware(
 )
 
 async def run_get_latest_telegram_post() -> str:
+    """جلب آخر منشور نصي من قناة تليجرام دون أي تعديل."""
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
-        return "خطأ: بيانات تليجرام غير مكتملة."
+        return "خطأ: بيانات تليجرام غير مكتملة في متغيرات البيئة."
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         updates = await bot.get_updates(limit=10)
@@ -39,17 +40,43 @@ async def run_get_latest_telegram_post() -> str:
         return f"حدث خطأ أثناء الاتصال بتليجرام: {str(e)}"
 
 def run_publish_to_linkedin(exact_text: str) -> str:
-    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_USER_SUB:
-        return "خطأ: بيانات لينكد إن غير مكتملة."
-    url = "https://api.linkedin.com/rest/posts"
-    headers = {
+    """نشر النص حرفياً إلى لينكد إن مع استخراج معرف الحساب تلقائياً من التوكن لتجنب خطأ 403."""
+    if not LINKEDIN_ACCESS_TOKEN:
+        return "خطأ: رمز الوصول للينكد إن غير متوفر."
+    
+    auth_headers = {
+        "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"
+    }
+
+    # 1. جلب معرف الحساب الشخصي (Person URN) تلقائياً لضمان تطابق الصلاحيات مع التوكن
+    author_urn = None
+    try:
+        userinfo_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers)
+        if userinfo_resp.status_code == 200:
+            user_data = userinfo_resp.json()
+            sub = user_data.get("sub")
+            if sub:
+                author_urn = f"urn:li:person:{sub}"
+    except Exception:
+        pass
+
+    # الاعتماد على المتغير الاحتياطي في حال تعذر جلبه تلقائياً
+    if not author_urn:
+        if LINKEDIN_USER_SUB:
+            author_urn = f"urn:li:person:{LINKEDIN_USER_SUB}"
+        else:
+            return "خطأ: تعذر استخراج معرف المستخدم من لينكد إن."
+
+    # 2. إرسال المنشور إلى لينكد إن
+    post_url = "https://api.linkedin.com/rest/posts"
+    post_headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
         "LinkedIn-Version": "202607",
         "X-Restli-Protocol-Version": "2.0.0",
         "Content-Type": "application/json"
     }
     payload = {
-        "author": f"urn:li:person:{LINKEDIN_USER_SUB}",
+        "author": author_urn,
         "commentary": exact_text,
         "visibility": "PUBLIC",
         "distribution": {
@@ -60,8 +87,9 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         "lifecycleState": "PUBLISHED",
         "isReshareDisabledByAuthor": False
     }
+
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(post_url, headers=post_headers, json=payload)
         if response.status_code == 201:
             return "تم النشر بنجاح على لينكد إن!"
         else:
@@ -69,7 +97,7 @@ def run_publish_to_linkedin(exact_text: str) -> str:
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
 
-# قائمة الأدوات المعرفة وفق معيار بروتوكول MCP
+# تعريف الأدوات لبروتوكول MCP
 TOOLS_DEFINITION = [
     {
         "name": "get_latest_telegram_post",
@@ -99,7 +127,7 @@ TOOLS_DEFINITION = [
 @app.get("/")
 @app.get("/mcp")
 async def health_check():
-    """استجابة فحص الصحة والتواجد"""
+    """استجابة فحص الجاهزية والصحة"""
     return {"status": "ok", "service": "Telegram-LinkedIn MCP Server"}
 
 @app.post("/")
@@ -114,7 +142,7 @@ async def handle_mcp_rpc(request: Request):
     req_id = body.get("id")
     method = body.get("method")
 
-    # 1. مرحلة المصافحة المبدئية للتعرف على الخادم
+    # مصافحة التهيئة الأولية
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -131,7 +159,7 @@ async def handle_mcp_rpc(request: Request):
             }
         }
 
-    # 2. إرجاع قائمة الأدوات لـ Gemini Spark
+    # قائمة الأدوات
     elif method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -141,7 +169,7 @@ async def handle_mcp_rpc(request: Request):
             }
         }
 
-    # 3. تنفيذ الأداة عند استدعاء الوكيل لها
+    # استدعاء وتنفيذ الأداة
     elif method == "tools/call":
         params = body.get("params", {})
         tool_name = params.get("name")
@@ -169,7 +197,6 @@ async def handle_mcp_rpc(request: Request):
             }
         }
 
-    # استجابات الإشعارات العادية
     elif method == "notifications/initialized":
         return JSONResponse(status_code=200, content={})
 
