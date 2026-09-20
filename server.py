@@ -40,7 +40,7 @@ async def run_get_latest_telegram_post() -> str:
         return f"حدث خطأ أثناء الاتصال بتليجرام: {str(e)}"
 
 def run_publish_to_linkedin(exact_text: str) -> str:
-    """نشر النص حرفياً إلى لينكد إن مع استخراج معرف الحساب تلقائياً من التوكن لتجنب خطأ 403."""
+    """نشر النص حرفياً إلى لينكد إن مع تشخيص واستخراج المعرف بدقة."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز الوصول للينكد إن غير متوفر."
     
@@ -48,26 +48,33 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"
     }
 
-    # 1. جلب معرف الحساب الشخصي (Person URN) تلقائياً لضمان تطابق الصلاحيات مع التوكن
-    author_urn = None
+    # محاولة استخراج المعرف تلقائياً عبر نقطة وصول /v2/userinfo
+    sub = None
     try:
         userinfo_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers)
         if userinfo_resp.status_code == 200:
-            user_data = userinfo_resp.json()
-            sub = user_data.get("sub")
-            if sub:
-                author_urn = f"urn:li:person:{sub}"
+            sub = userinfo_resp.json().get("sub")
     except Exception:
         pass
 
-    # الاعتماد على المتغير الاحتياطي في حال تعذر جلبه تلقائياً
-    if not author_urn:
-        if LINKEDIN_USER_SUB:
-            author_urn = f"urn:li:person:{LINKEDIN_USER_SUB}"
-        else:
-            return "خطأ: تعذر استخراج معرف المستخدم من لينكد إن."
+    # محاولة ثانية عبر /v2/me في حال عدم تفعيل OpenID
+    if not sub:
+        try:
+            me_resp = requests.get("https://api.linkedin.com/v2/me", headers=auth_headers)
+            if me_resp.status_code == 200:
+                sub = me_resp.json().get("id")
+        except Exception:
+            pass
 
-    # 2. إرسال المنشور إلى لينكد إن
+    # الاعتماد على المتغير اليدوي إذا تعذر الاستخراج التلقائي
+    if not sub:
+        sub = LINKEDIN_USER_SUB
+
+    if not sub:
+        return "خطأ: تعذر تحديد معرف المستخدم (Author ID) تلقائياً أو عبر المتغيرات."
+
+    author_urn = f"urn:li:person:{sub}"
+
     post_url = "https://api.linkedin.com/rest/posts"
     post_headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -93,7 +100,7 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         if response.status_code == 201:
             return "تم النشر بنجاح على لينكد إن!"
         else:
-            return f"فشل النشر ({response.status_code}): {response.text}"
+            return f"فشل النشر ({response.status_code}): المعرّف المستخدم [{author_urn}] - تفاصيل الرد: {response.text}"
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
 
