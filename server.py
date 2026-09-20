@@ -1,7 +1,9 @@
 import os
 import requests
-from mcp.server.fastmcp import FastMCP
+import uvicorn
 from telegram import Bot
+from mcp.server.fastmcp import FastMCP
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
@@ -62,8 +64,16 @@ def publish_to_linkedin(exact_text: str) -> str:
             return f"فشل النشر ({response.status_code}): {response.text}"
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
-import os
-import uvicorn
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    app = mcp.sse_app()
+    # السماح لكافة النطاقات بتجاوز حظر Host Header
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
