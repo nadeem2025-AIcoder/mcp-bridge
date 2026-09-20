@@ -3,14 +3,18 @@ import requests
 import uvicorn
 from telegram import Bot
 from mcp.server.fastmcp import FastMCP
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from mcp.server.transport_security import TransportSecuritySettings
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 
-mcp = FastMCP("Telegram-LinkedIn-Mirror-Bridge")
+# تعطيل فحص الـ Host السحابي للسماح بنطاقات Railway الخارجية
+mcp = FastMCP(
+    "Telegram-LinkedIn-Mirror-Bridge",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+)
 
 @mcp.tool()
 async def get_latest_telegram_post() -> str:
@@ -67,13 +71,4 @@ def publish_to_linkedin(exact_text: str) -> str:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app = mcp.sse_app()
-    # السماح لكافة النطاقات بتجاوز حظر Host Header
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        proxy_headers=True,
-        forwarded_allow_ips="*"
-    )
+    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
