@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
+from starlette.routing import Route, Mount
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
@@ -70,17 +71,18 @@ def publish_to_linkedin(exact_text: str) -> str:
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
 
+# استخراج تطبيق الـ SSE المدمج
+app = mcp.sse_app()
+
+# السماح لجميع اتصالات CORS من أي واجهة ويب
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app = mcp.sse_app()
-    
-    # دعم ترويسات CORS الكاملة لكي يقبل متصفح Spark الاتصال
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
     uvicorn.run(app, host="0.0.0.0", port=port)
