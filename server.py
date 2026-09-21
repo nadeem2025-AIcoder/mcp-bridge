@@ -6,6 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from telegram import Bot
 
+# المسار المطلق للصورة في نفس مجلد المشروع على Railway
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
@@ -24,25 +28,18 @@ app.add_middleware(
 class PublishPayload(BaseModel):
     text: str
 
-async def post_to_telegram(text: str, image_path: str = "post_cover.png") -> str:
-    """نشر المنشور إلى تيليجرام مع الصورة إن وجدت أو كنص."""
+async def post_to_telegram(text: str) -> str:
+    """نشر المنشور إلى تليجرام كنص فقط دون صورة."""
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
         return "خطأ: بيانات تليجرام غير مكتملة."
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        if os.path.exists(image_path):
-            with open(image_path, "rb") as photo:
-                msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text[:1024])
-                if len(text) > 1024:
-                    await bot.send_message(chat_id=CHANNEL_ID, text=text[1024:])
-                return f"تم النشر في تليجرام مع الصورة بنجاح (ID: {msg.message_id})"
-        else:
-            msg = await bot.send_message(chat_id=CHANNEL_ID, text=text)
-            return f"تم النشر في تليجرام بنجاح (ID: {msg.message_id})"
+        msg = await bot.send_message(chat_id=CHANNEL_ID, text=text)
+        return f"تم النشر في تليجرام بنجاح (ID: {msg.message_id})"
     except Exception as e:
         return f"خطأ تليجرام: {str(e)}"
 
-def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -> str:
+def upload_linkedin_image(author_urn: str, image_path: str = IMAGE_PATH) -> str:
     """رفع صورة الغلاف التعبيرية إلى خوادم لينكد إن."""
     if not os.path.exists(image_path) or not LINKEDIN_ACCESS_TOKEN:
         return ""
@@ -60,10 +57,12 @@ def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -
             init_data = init_res.json().get("value", {})
             upload_url = init_data.get("uploadUrl")
             image_urn = init_data.get("image")
+            
             with open(image_path, "rb") as img_file:
+                # ملاحظة هامة: لا نضع هيدر Authorization في طلب PUT المباشر للرابط المؤقت
                 put_res = requests.put(
                     upload_url,
-                    headers={"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}", "Content-Type": "image/png"},
+                    headers={"Content-Type": "image/png"},
                     data=img_file,
                     timeout=25
                 )
@@ -73,14 +72,13 @@ def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -
         pass
     return ""
 
-def post_to_linkedin(text: str, image_path: str = "post_cover.png") -> str:
-    """نشر المنشور على حساب لينكد إن الشخصي."""
+def post_to_linkedin(text: str, image_path: str = IMAGE_PATH) -> str:
+    """نشر المنشور على حساب لينكد إن مع صورة الغلاف حصراً."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز وصول لينكد إن غير متوفر."
     auth_headers = {"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"}
     sub = None
     
-    # محاولة استخراج sub تلقائياً
     try:
         u_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers, timeout=10)
         if u_resp.status_code == 200:
@@ -145,9 +143,9 @@ def health():
 
 @app.post("/publish")
 async def publish(payload: PublishPayload):
-    """المسار الذي يستدعيه سبارك لتسليم المنشور ونشره فوراً."""
-    tg_res = await post_to_telegram(payload.text, "post_cover.png")
-    li_res = post_to_linkedin(payload.text, "post_cover.png")
+    """نشر نصي فقط في تليجرام، ونشر مع صورة الغلاف حصراً في لينكد إن."""
+    tg_res = await post_to_telegram(payload.text)
+    li_res = post_to_linkedin(payload.text, IMAGE_PATH)
     return {
         "telegram": tg_res,
         "linkedin": li_res
