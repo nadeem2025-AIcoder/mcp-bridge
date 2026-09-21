@@ -26,12 +26,12 @@ class PublishPayload(BaseModel):
     text: str
 
 def generate_test_summary() -> str:
-    """اختبار استدعاء Gemini بنص تجريبي مباشر للتأكد من زوال خطأ 404."""
+    """اختبار استدعاء Gemini باستخدام النموذج الحديث المحدد من Google."""
     if not GEMINI_API_KEY:
         return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
 
     prompt = "اكتب نصيحة إدارية سريعة وموجزة في إدارة الجودة (بين 50 و100 كلمة) مع وسم #إدارة_الجودة."
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
@@ -153,17 +153,16 @@ async def publish(payload: PublishPayload):
 async def trigger_now():
     """اختبار فوري: يولد النص من Gemini ثم ينشره فوراً على تيليجرام ولينكد إن."""
     generated_text = generate_test_summary()
-    
-    # إذا فشل التوليد يرجع نتيجة الخطأ مباشرة للتشخيص
+
     if generated_text.startswith("كود الخطأ") or generated_text.startswith("خطأ"):
         return {
             "status": "gemini_error",
             "details": generated_text
         }
-        
+
     tg_res = await post_to_telegram(generated_text)
     li_res = post_to_linkedin(generated_text)
-    
+
     return {
         "status": "success",
         "generated_text": generated_text,
