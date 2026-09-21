@@ -3,3 +3,5 @@ fastapi
 uvicorn
 requests
 python-telegram-bot
+apscheduler
+pytz
