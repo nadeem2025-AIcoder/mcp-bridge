@@ -19,80 +19,113 @@ LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+# معرف مجلد Guadara_Books المفتوح للمشاركة
+FOLDER_ID = "1Psax-pgC0M-Ocnv9O3wXZyhjaNUwcWCO"
+
 TIMEZONE = pytz.timezone("Asia/Aden")
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
-# قائمة بمعرفات وعناوين كتب مجلد Guadara_Books على Google Drive
-DRIVE_BOOKS = [
-    {"title": "المواصفة القياسية ISO 14001:2015 لنظم الإدارة البيئية", "id": "1QHWA2ixyV7q_YI6faCQK0-MB7ZKP52c1"},
-    {"title": "مواصفة ISO 19011 الإرشادية لإدارة المراجعة والتدقيق", "id": "1VNtdEwfKqv4XRTt0RLGuA-smvVmK8fBx"},
-    {"title": "مواصفة ISO 45001:2018 لإدارة السلامة والصحة المهنية", "id": "1LCD41Z14j2EB5J3vZLtabwtok9MlsMiI"},
-    {"title": "المواصفة القياسية ISO/IEC 27001 لأنظمة إدارة أمن المعلومات", "id": "1dpZpHq7X3ZgzbIXC1KejeKoiRRCL79p3"},
-    {"title": "مواصفة الأيزو 22002-1 لسلامة وتصنيع الغذاء", "id": "1leLZmJegbrq8xU6tOlvljMPKQQmrWz08"},
-    {"title": "نظم إدارة سلامة الغذاء ISO 22000", "id": "1onjbTW0Seg8NnZmdWRz-0YqWPv1BtOmh"},
-    {"title": "المعيار العالمي لسلامة الغذاء والتعبئة BRCGS Packaging Issue 7", "id": "1YxlZFN--SPGII2VMNoQZUcHMGUee0yjZ"},
-    {"title": "دليل قياس الاستدامة المؤسسية", "id": "1tcqep-tqpnyHwfi6CpWUcC7WzBzWAfNS"},
-    {"title": "دليل نقاط التحقق للوقاية من الإجهاد في بيئة العمل", "id": "14eDW5YNdTp93WHC66HJVzDSfAs7cLfWL"}
-]
+# --- دالة جلب قائمة كل الكتب من المجلد عبر Google Drive API ---
 
-# --- دالة استخراج نص عشوائي من كتاب في Google Drive ---
+def fetch_all_books_from_folder():
+    """جلب قائمة بكل ملفات الـ PDF الموجودة في المجلد (يدعم مئات الكتب)."""
+    api_key = GEMINI_API_KEY.strip() if GEMINI_API_KEY else ""
+    if not api_key:
+        return []
 
-def get_excerpt_from_drive_book():
-    """تنزيل صفحات محددة من أحد كتب درايف واستخراج النص مباشرة."""
-    book = random.choice(DRIVE_BOOKS)
-    download_url = f"https://drive.google.com/uc?export=download&id={book['id']}"
+    url = "https://www.googleapis.com/drive/v3/files"
+    params = {
+        "q": f"'{FOLDER_ID}' in parents and mimeType='application/pdf' and trashed=false",
+        "fields": "nextPageToken, files(id, name)",
+        "pageSize": 1000,
+        "key": api_key
+    }
+
+    all_files = []
+    try:
+        while True:
+            resp = requests.get(url, params=params, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                files = data.get("files", [])
+                for f in files:
+                    all_files.append({"id": f["id"], "title": f["name"].replace(".pdf", "")})
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+                params["pageToken"] = page_token
+            else:
+                break
+    except Exception as e:
+        print(f"خطأ أثناء جلب قائمة الكتب: {e}")
+
+    return all_files
+
+# --- دالة استخراج النص من أحد كتب المجلد ---
+
+def get_excerpt_from_drive():
+    """اختيار كتاب عشوائي من الـ 300+ كتاب واستخراج مقطع نصي منه."""
+    books = fetch_all_books_from_folder()
     
+    # في حال فشل الاستعلام السحابي، يتم استخدام مرجع احتياطي
+    if not books:
+        book_title = "نظم إدارة الجودة والتحسين المستمر"
+        return book_title, ""
+
+    book = random.choice(books)
+    book_title = book["title"]
+    download_url = f"https://drive.google.com/uc?export=download&id={book['id']}"
+
     try:
         response = requests.get(download_url, timeout=30)
         if response.status_code == 200:
             pdf_file = io.BytesIO(response.content)
             reader = PdfReader(pdf_file)
             total_pages = len(reader.pages)
-            
-            if total_pages > 5:
-                # اختيار مقطع من 3 إلى 5 صفحات متتالية
-                start_page = random.randint(3, max(3, total_pages - 5))
+
+            if total_pages > 3:
+                start_page = random.randint(2, max(2, total_pages - 4))
                 excerpt = ""
-                for p in range(start_page, min(start_page + 4, total_pages)):
+                for p in range(start_page, min(start_page + 3, total_pages)):
                     page_text = reader.pages[p].extract_text() or ""
                     excerpt += page_text + "\n"
-                
-                if len(excerpt.strip()) > 150:
-                    return book["title"], excerpt[:3000]
+
+                if len(excerpt.strip()) > 100:
+                    return book_title, excerpt[:2500]
     except Exception as e:
-        print(f"تعذر استخراج النص من الكتاب: {e}")
+        print(f"تعذر قراءة الكتاب {book_title}: {e}")
 
-    return book["title"], ""
+    return book_title, ""
 
-# --- دالة التوليد عبر Gemini بناءً على الكتاب ---
+# --- دالة التوليد عبر Gemini ---
 
 def generate_quality_summary() -> str:
-    """صياغة ملخص احترافي بالاعتماد الحصري على كتاب من Google Drive."""
+    """صياغة منشور مهني تطبيقي دقيق من محتوى الكتاب."""
     api_key = GEMINI_API_KEY.strip() if GEMINI_API_KEY else ""
     if not api_key:
         return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
 
-    book_title, excerpt = get_excerpt_from_drive_book()
+    book_title, excerpt = get_excerpt_from_drive()
 
     if excerpt:
         prompt = (
-            f"أنت خبير استشاري في نظم إدارة الجودة والمواصفات الدولية.\n"
-            f"قم بصياغة منشور مهني تطبيقي دقيق (بين 250 و350 كلمة) مستخلص حصراً من المرجع التالي:\n"
-            f"الكتاب/المعيار: {book_title}\n\n"
-            f"النص المقتبس من المرجع:\n\"\"\"\n{excerpt}\n\"\"\"\n\n"
-            f"شروط الصياغة:\n"
-            f"1. ابدأ بعنوان مهني جذاب يشير إلى المرجع أو المفهوم.\n"
-            f"2. لخص الفكرة الإدارية أو المتطلب في نقاط عملية واضحة قابلة للتطبيق في المنظمات.\n"
-            f"3. اذكر في السطر الأخير اسم المرجع: (المصدر: {book_title}).\n"
-            f"4. أضف الوسوم المهنية المناسبة (#إدارة_الجودة #المواصفات_الدولية وغيرها).\n"
-            f"5. لا تضف أي مقدمات أو عبارات ترحيبية، اجعل النص جاهزاً للنشر المباشر."
+            f"أنت خبير استشاري ومراجع معتمد في نظم إدارة الجودة والمواصفات القياسية الدولية.\n"
+            f"قم بصياغة منشور مهني احترافي متكامل (بين 250 و350 كلمة) مستخلص مباشرة من هذا المرجع:\n"
+            f"المرجع: {book_title}\n\n"
+            f"النص المستخرج من الكتاب:\n\"\"\"\n{excerpt}\n\"\"\"\n\n"
+            f"شروط المنشور:\n"
+            f"1. ابدأ بعنوان مهني جذاب وقوي.\n"
+            f"2. استخلص الفكرة الإدارية أو المتطلب القياسي في نقاط عملية مركزة قابلة للتطبيق المؤسسي الفوري.\n"
+            f"3. اذكر اسم المرجع في السطر الأخير بدقة: (المصدر: {book_title}).\n"
+            f"4. ضع وسوم مهنية مناسبة (#إدارة_الجودة #المواصفات_الدولية #التميز_المؤسسي).\n"
+            f"5. لا تضف أي مقدمات أو تعليقات دردشة، اجعل النص جاهزاً تماماً للنشر المباشر."
         )
     else:
         prompt = (
-            f"أنت خبير استشاري في نظم إدارة الجودة والمواصفات القياسية.\n"
-            f"اكتب منشوراً مهنياً عملياً ومحكماً (بين 150 و250 كلمة) يشرح أحد البنود أو المبادئ الجوهرية في:\n"
+            f"أنت خبير استشاري في نظم إدارة الجودة.\n"
+            f"اكتب منشوراً مهنياً عملياً ومحكماً (بين 150 و250 كلمة) حول أحد المبادئ التطبيقية الهامة في:\n"
             f"({book_title}).\n"
-            f"اجعل النص في نقاط عملية تطبيقية، واختم بذكر اسم المرجع والوسوم المهنية المناسبة دون مقدمات جانبية."
+            f"اجعل النص في نقاط عملية واختم بالمرجع والوسوم المهنية دون مقدمات جانبية."
         )
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -132,7 +165,7 @@ async def run_post_to_telegram(message_text: str) -> str:
         return f"خطأ تليجرام: {str(e)}"
 
 def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -> str:
-    """رفع الصورة التعبيرية إلى لينكد إن."""
+    """رفع صورة الغلاف التعبيرية إلى لينكد إن."""
     if not os.path.exists(image_path) or not LINKEDIN_ACCESS_TOKEN:
         return ""
 
@@ -169,7 +202,7 @@ def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -
     return ""
 
 def run_publish_to_linkedin(exact_text: str) -> str:
-    """نشر الملخص كاملاً مع الصورة إلى لينكد إن."""
+    """نشر الملخص مع الصورة إلى لينكد إن."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز وصول لينكد إن غير متوفر."
 
@@ -233,11 +266,11 @@ def run_publish_to_linkedin(exact_text: str) -> str:
     except Exception as e:
         return f"خطأ اتصال بلينكد إن: {str(e)}"
 
-# --- دورة النشر التلقائية والجدولة ---
+# --- دورة النشر المستقلة المجدولة ---
 
 async def scheduled_publishing_cycle():
-    """دورة النشر الكاملة: قراءة الكتاب -> تلخيص -> نشر تليجرام ولينكد إن."""
-    print("بدء دورة التلخيص والنشر من كتب Google Drive...")
+    """دورة النشر الكاملة: استكشاف الكتب -> قراءة واقتباس -> تلخيص -> نشر."""
+    print("بدء دورة التلخيص والنشر الشاملة من مكتبة Google Drive...")
     summary_text = generate_quality_summary()
 
     tg_result = await run_post_to_telegram(summary_text)
@@ -248,7 +281,7 @@ async def scheduled_publishing_cycle():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # تشغيل المهمة يومياً 3 مرات: 9:00 ص، 2:00 ظ، 8:00 م بتوقيت اليمن
+    # النشر التلقائي 3 مرات يومياً (9 ص، 2 ظ، 8 م بتوقيت اليمن)
     scheduler.add_job(
         scheduled_publishing_cycle,
         CronTrigger(hour="9,14,20", minute="0", timezone=TIMEZONE),
