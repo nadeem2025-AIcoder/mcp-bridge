@@ -10,6 +10,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 app = FastAPI(title="Guadara-MCP-Bridge")
 
@@ -23,6 +24,25 @@ app.add_middleware(
 
 class PublishPayload(BaseModel):
     text: str
+
+def generate_test_summary() -> str:
+    """اختبار استدعاء Gemini بنص تجريبي مباشر للتأكد من زوال خطأ 404."""
+    if not GEMINI_API_KEY:
+        return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
+
+    prompt = "اكتب نصيحة إدارية سريعة وموجزة في إدارة الجودة (بين 50 و100 كلمة) مع وسم #إدارة_الجودة."
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        if res.status_code == 200:
+            data = res.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return f"كود الخطأ: {res.status_code} - التفاصيل: {res.text[:200]}"
+    except Exception as e:
+        return f"خطأ اتصال: {str(e)}"
 
 async def post_to_telegram(text: str) -> str:
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
@@ -124,6 +144,29 @@ async def publish(payload: PublishPayload):
     tg_res = await post_to_telegram(payload.text)
     li_res = post_to_linkedin(payload.text)
     return {
+        "telegram": tg_res,
+        "linkedin": li_res
+    }
+
+@app.get("/trigger-now")
+@app.post("/trigger-now")
+async def trigger_now():
+    """اختبار فوري: يولد النص من Gemini ثم ينشره فوراً على تيليجرام ولينكد إن."""
+    generated_text = generate_test_summary()
+    
+    # إذا فشل التوليد يرجع نتيجة الخطأ مباشرة للتشخيص
+    if generated_text.startswith("كود الخطأ") or generated_text.startswith("خطأ"):
+        return {
+            "status": "gemini_error",
+            "details": generated_text
+        }
+        
+    tg_res = await post_to_telegram(generated_text)
+    li_res = post_to_linkedin(generated_text)
+    
+    return {
+        "status": "success",
+        "generated_text": generated_text,
         "telegram": tg_res,
         "linkedin": li_res
     }
