@@ -151,13 +151,9 @@ def generate_quality_summary() -> str:
     if not api_key:
         return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    headers = {
-        "Content-Type": "application/json"
-    }
     prompt = (
         "بصفتك خبيراً استشارياً في نظم إدارة الجودة والتميز المؤسسي، "
-        "اكتب منشوراً مهنياً مكتملاً ومحكماً (بين 150 و250 كلمة) حول أحد المفاهيم أو الأدوات المتقدمة في الجودة "
+        "اكتب منشوراً مهنياً مكتملاً ومحكماً (بين 250 و350 كلمة) حول أحد المفاهيم أو الأدوات المتقدمة في الجودة "
         "(مثل: Six Sigma, Kaizen, Lean, ISO Standards, TQM). "
         "ابدأ بعنوان جذاب، يليه صلب الموضوع في نقاط مركزة قابلة للتطبيق العملي، واختم بوسوم مناسبة. "
         "اجعل النص جاهزاً للنشر المباشر دون أي مقدمات أو تعليقات جانبية."
@@ -166,16 +162,30 @@ def generate_quality_summary() -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
     }
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            data = res.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            return f"خطأ من Gemini API (كود {res.status_code}): {res.text[:300]}"
-    except Exception as e:
-        return f"استثناء أثناء الاتصال بـ Gemini: {str(e)}"
+    # قائمة بالنماذج المعتمدة للتجربة بالترتيب التنازلي لضمان التوافق التام
+    candidate_urls = [
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    ]
+
+    last_error = ""
+    for url in candidate_urls:
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=30)
+            if res.status_code == 200:
+                data = res.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            else:
+                last_error = f"كود {res.status_code}: {res.text[:250]}"
+        except Exception as e:
+            last_error = str(e)
+
+    return f"خطأ من Gemini API: {last_error}"
 
 # --- دالة دورة النشر المجدولة التلقائية ---
 
