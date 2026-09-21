@@ -2,22 +2,29 @@ import os
 import re
 import html
 import requests
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from telegram import Bot
-from mcp.server.fastmcp import FastMCP
+import uvicorn
 
-# تحديد مسار الصورة والتحميل الاحتياطي من GitHub
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
 
-# جلب بيانات الاعتماد من متغيرات البيئة في Railway
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "").strip()
-PORT = int(os.getenv("PORT", 8080))
 
-# تهيئة خادم بروتوكول MCP
-mcp = FastMCP("GuadaraBridge", host="0.0.0.0", port=PORT)
+app = FastAPI(title="Spark-Publishing-Bridge")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def ensure_cover_image():
     """التحقق من وجود صورة الغلاف محلياً أو تنزيلها تلقائياً من GitHub."""
@@ -52,7 +59,6 @@ def upload_linkedin_image(author_urn: str) -> str:
             image_urn = init_data.get("image")
             
             with open(IMAGE_PATH, "rb") as img_file:
-                # لا نرسل هيدر Authorization إلى رابط الرفع المؤقت Pre-signed S3
                 put_res = requests.put(
                     upload_url,
                     headers={"Content-Type": "image/png"},
@@ -65,30 +71,6 @@ def upload_linkedin_image(author_urn: str) -> str:
         pass
     return ""
 
-@mcp.tool(
-    name="get_latest_telegram_post",
-    description="يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام."
-)
-def get_latest_telegram_post() -> str:
-    """قراءة آخر منشور من واجهة القناة العامة على تليجرام."""
-    try:
-        url = "https://t.me/s/GuadaraQms"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if res.status_code == 200:
-            matches = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', res.text, re.DOTALL)
-            if matches:
-                last_msg = matches[-1]
-                clean = re.sub(r'<br\s*/?>', '\n', last_msg)
-                clean = re.sub(r'<[^>]+>', '', clean)
-                return html.unescape(clean).strip()
-    except Exception as e:
-        return f"تعذر جلب المنشور: {str(e)}"
-    return "لا توجد منشورات متاحة حالياً."
-
-@mcp.tool(
-    name="post_to_telegram",
-    description="ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms)."
-)
 async def post_to_telegram(message_text: str) -> str:
     """نشر نصي فقط على تليجرام دون صورة."""
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
@@ -100,10 +82,6 @@ async def post_to_telegram(message_text: str) -> str:
     except Exception as e:
         return f"خطأ تليجرام: {str(e)}"
 
-@mcp.tool(
-    name="publish_to_linkedin",
-    description="ينشر النص الأصلي حرفياً إلى لينكد إن دون أي تغيير."
-)
 def publish_to_linkedin(exact_text: str) -> str:
     """نشر المنشور على لينكد إن مع إرفاق صورة الغلاف حصراً."""
     if not LINKEDIN_ACCESS_TOKEN:
@@ -168,5 +146,136 @@ def publish_to_linkedin(exact_text: str) -> str:
     except Exception as e:
         return f"خطأ اتصال لينكد إن: {str(e)}"
 
+def get_latest_telegram_post() -> str:
+    """قراءة آخر منشور من واجهة القناة العامة على تليجرام."""
+    try:
+        url = "https://t.me/s/GuadaraQms"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if res.status_code == 200:
+            matches = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', res.text, re.DOTALL)
+            if matches:
+                last_msg = matches[-1]
+                clean = re.sub(r'<br\s*/?>', '\n', last_msg)
+                clean = re.sub(r'<[^>]+>', '', clean)
+                return html.unescape(clean).strip()
+    except Exception as e:
+        return f"تعذر جلب المنشور: {str(e)}"
+    return "لا توجد منشورات متاحة حالياً."
+
+@app.get("/")
+@app.get("/health")
+def health():
+    return {"status": "ready", "bridge": "active"}
+
+class PublishPayload(BaseModel):
+    text: str
+
+@app.post("/publish")
+async def publish(payload: PublishPayload):
+    tg_res = await post_to_telegram(payload.text)
+    li_res = publish_to_linkedin(payload.text)
+    return {"telegram": tg_res, "linkedin": li_res}
+
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """المسار المعتمد لبروتوكول MCP الذي يتصل به سبارك."""
+    try:
+        data = await request.json()
+    except Exception:
+        return Response(status_code=400)
+    
+    method = data.get("method")
+    req_id = data.get("id")
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "GuadaraBridge", "version": "1.0.0"}
+            }
+        }
+    elif method == "notifications/initialized":
+        return Response(status_code=200)
+    elif method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": [
+                    {
+                        "name": "get_latest_telegram_post",
+                        "description": "يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام.",
+                        "inputSchema": {"type": "object", "properties": {}}
+                    },
+                    {
+                        "name": "post_to_telegram",
+                        "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "message_text": {
+                                    "type": "string",
+                                    "description": "النص أو التلخيص المراد نشره في قناة تليجرام."
+                                }
+                            },
+                            "required": ["message_text"]
+                        }
+                    },
+                    {
+                        "name": "publish_to_linkedin",
+                        "description": "ينشر النص الأصلي حرفياً إلى لينكد إن دون أي تغيير.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "exact_text": {
+                                    "type": "string",
+                                    "description": "النص الكامل للمنشور المراد نشره على لينكد إن."
+                                }
+                            },
+                            "required": ["exact_text"]
+                        }
+                    }
+                ]
+            }
+        }
+    elif method == "tools/call":
+        params = data.get("params", {})
+        tool_name = params.get("name")
+        args = params.get("arguments", {})
+        result_text = ""
+        
+        if tool_name == "post_to_telegram":
+            msg = args.get("message_text", "")
+            result_text = await post_to_telegram(msg)
+        elif tool_name == "publish_to_linkedin":
+            msg = args.get("exact_text", "")
+            result_text = publish_to_linkedin(msg)
+        elif tool_name == "get_latest_telegram_post":
+            result_text = get_latest_telegram_post()
+        else:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}
+            }
+            
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [{"type": "text", "text": result_text}]
+            }
+        }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32601, "message": f"Method not supported: {method}"}
+    }
+
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
