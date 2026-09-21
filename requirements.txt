@@ -6,3 +6,4 @@ python-telegram-bot
 apscheduler
 pytz
 pypdf
+google-genai
