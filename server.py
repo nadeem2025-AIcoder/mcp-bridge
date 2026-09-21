@@ -1,6 +1,7 @@
 import os
 import random
 import io
+import time
 import requests
 import uvicorn
 from fastapi import FastAPI
@@ -86,7 +87,7 @@ def download_book_excerpt():
     return book_title, ""
 
 def generate_book_summary() -> tuple:
-    """استخراج نص حقيقي من كتاب وتلخيصه بنموذج gemini-3.6-flash المعتمد."""
+    """توليد التلخيص مع معالجة ذكية لأخطاء 503 بالتبديل وإعادة المحاولة."""
     book_title, excerpt = download_book_excerpt()
 
     if excerpt:
@@ -110,18 +111,32 @@ def generate_book_summary() -> tuple:
             f"اجعل النص في نقاط عملية واختم بالمرجع والوسوم دون مقدمات جانبية."
         )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=40)
-        if res.status_code == 200:
-            summary = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return book_title, summary
-        return book_title, f"كود الخطأ: {res.status_code}"
-    except Exception as e:
-        return book_title, f"خطأ اتصال: {str(e)}"
+    # قائمة بالنماذج المستقرة للتبديل الفوري في حال انشغال أحدها (503)
+    models = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    last_error = ""
+
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        for attempt in range(2):  # محاولتان لكل نموذج مع فاصل ثانية
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=40)
+                if res.status_code == 200:
+                    summary = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    return book_title, summary
+                elif res.status_code == 503:
+                    time.sleep(1.5)
+                    continue
+                else:
+                    last_error = f"{model} -> كود {res.status_code}: {res.text[:120]}"
+                    break
+            except Exception as e:
+                last_error = str(e)
+                time.sleep(1)
+
+    return book_title, f"خطأ توليد: {last_error}"
 
 async def post_to_telegram(text: str, image_path: str = "post_cover.png") -> str:
     """نشر المنشور مع الصورة إلى قناة تيليجرام."""
@@ -129,17 +144,15 @@ async def post_to_telegram(text: str, image_path: str = "post_cover.png") -> str
         return "خطأ: بيانات تليجرام غير مكتملة."
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        # إذا كانت الصورة موجودة يتم إرسالها مع المنشور كـ caption
         if os.path.exists(image_path):
             with open(image_path, "rb") as photo:
                 msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text[:1024])
-                # إذا تجاوز النص حد الـ caption يتم إرسال بقيته كرسالة تابعة
                 if len(text) > 1024:
                     await bot.send_message(chat_id=CHANNEL_ID, text=text[1024:])
                 return f"تم النشر في تليجرام مع الصورة بنجاح (ID: {msg.message_id})"
         else:
             msg = await bot.send_message(chat_id=CHANNEL_ID, text=text)
-            return f"تم النشر نصياً (الصورة غير موجودة على السيرفر) ID: {msg.message_id}"
+            return f"تم النشر نصياً (الصورة غير متوفرة في المجلد) ID: {msg.message_id}"
     except Exception as e:
         return f"خطأ تليجرام: {str(e)}"
 
@@ -236,7 +249,7 @@ async def trigger_now():
     """سحب كتاب من درايف وتلخيصه ونشره مع الصورة."""
     book_title, summary = generate_book_summary()
 
-    if summary.startswith("كود الخطأ") or summary.startswith("خطأ"):
+    if summary.startswith("خطأ"):
         return {"status": "error", "book": book_title, "details": summary}
 
     tg_res = await post_to_telegram(summary, "post_cover.png")
