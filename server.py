@@ -147,13 +147,17 @@ def run_publish_to_linkedin(exact_text: str) -> str:
 
 def generate_quality_summary() -> str:
     """صياغة ملخص احترافي في إدارة الجودة عبر Gemini API مباشرة."""
-    if not GEMINI_API_KEY:
-        return "إدارة الجودة الشاملة هي نهج إداري يهدف لتحقيق النجاح طويل الأمد من خلال إرضاء العملاء وتحسين الأداء المؤسسي المستمر."
+    api_key = GEMINI_API_KEY.strip() if GEMINI_API_KEY else ""
+    if not api_key:
+        return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    headers = {
+        "Content-Type": "application/json"
+    }
     prompt = (
         "بصفتك خبيراً استشارياً في نظم إدارة الجودة والتميز المؤسسي، "
-        "اكتب منشوراً مهنياً مكتملاً ومحكماً (من 150 إلى 250 كلمة) حول أحد المفاهيم أو الأدوات المتقدمة في الجودة "
+        "اكتب منشوراً مهنياً مكتملاً ومحكماً (بين 150 و250 كلمة) حول أحد المفاهيم أو الأدوات المتقدمة في الجودة "
         "(مثل: Six Sigma, Kaizen, Lean, ISO Standards, TQM). "
         "ابدأ بعنوان جذاب، يليه صلب الموضوع في نقاط مركزة قابلة للتطبيق العملي، واختم بوسوم مناسبة. "
         "اجعل النص جاهزاً للنشر المباشر دون أي مقدمات أو تعليقات جانبية."
@@ -164,14 +168,14 @@ def generate_quality_summary() -> str:
     }
 
     try:
-        res = requests.post(url, json=payload, timeout=30)
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
             data = res.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            return f"خطأ من Gemini API (كود {res.status_code}): {res.text[:300]}"
     except Exception as e:
-        print(f"خطأ في توليد المحتوى: {e}")
-
-    return "إدارة الجودة والتحسين المستمر هما الركيزة الأساسية لتميز واستدامة المنظمات الحديثة."
+        return f"استثناء أثناء الاتصال بـ Gemini: {str(e)}"
 
 # --- دالة دورة النشر المجدولة التلقائية ---
 
