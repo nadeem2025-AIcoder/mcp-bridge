@@ -26,7 +26,7 @@ class PublishPayload(BaseModel):
     text: str
 
 def generate_test_summary() -> str:
-    """اختبار استدعاء Gemini باستخدام النموذج الحديث المحدد من Google."""
+    """اختبار استدعاء Gemini باستخدام المهلة الموسعة لتفادي انقطاع الاتصال."""
     if not GEMINI_API_KEY:
         return "خطأ: متغير GEMINI_API_KEY غير متوفر في بيئة الخادم."
 
@@ -36,7 +36,8 @@ def generate_test_summary() -> str:
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        # رفع مهلة الانتظار إلى 60 ثانية لضمان استلام التوليد كاملاً
+        res = requests.post(url, headers=headers, json=payload, timeout=60)
         if res.status_code == 200:
             data = res.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -66,7 +67,7 @@ def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -
     init_url = "https://api.linkedin.com/rest/images?action=initializeUpload"
     init_payload = {"initializeUploadRequest": {"owner": author_urn}}
     try:
-        init_res = requests.post(init_url, headers=headers, json=init_payload, timeout=15)
+        init_res = requests.post(init_url, headers=headers, json=init_payload, timeout=20)
         if init_res.status_code == 200:
             init_data = init_res.json().get("value", {})
             upload_url = init_data.get("uploadUrl")
@@ -76,7 +77,7 @@ def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -
                     upload_url,
                     headers={"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}", "Content-Type": "image/png"},
                     data=img_file,
-                    timeout=25
+                    timeout=30
                 )
                 if put_res.status_code in (200, 201):
                     return image_urn
@@ -90,7 +91,7 @@ def post_to_linkedin(text: str) -> str:
     auth_headers = {"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"}
     sub = None
     try:
-        u_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers, timeout=10)
+        u_resp = requests.get("https://api.linkedin.com/v2/userinfo", headers=auth_headers, timeout=15)
         if u_resp.status_code == 200:
             sub = u_resp.json().get("sub")
     except Exception:
@@ -126,7 +127,7 @@ def post_to_linkedin(text: str) -> str:
         payload["content"] = {"media": {"id": image_urn}}
 
     try:
-        res = requests.post(post_url, headers=post_headers, json=payload, timeout=20)
+        res = requests.post(post_url, headers=post_headers, json=payload, timeout=25)
         if res.status_code == 201:
             return "تم النشر بنجاح على لينكد إن!"
         return f"فشل لينكد إن ({res.status_code}): {res.text[:150]}"
