@@ -49,8 +49,51 @@ async def run_post_to_telegram(message_text: str) -> str:
     except Exception as e:
         return f"حدث خطأ أثناء النشر في تليجرام: {str(e)}"
 
+def upload_linkedin_image(author_urn: str, image_path: str = "post_cover.png") -> str:
+    """رفع الصورة إلى لينكد إن وإرجاع المعرف الدائم (Image URN)."""
+    if not os.path.exists(image_path):
+        return ""
+
+    headers = {
+        "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
+        "LinkedIn-Version": "202607",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Content-Type": "application/json"
+    }
+
+    # 1. تهيئة الرفع للحصول على Upload URL
+    init_url = "https://api.linkedin.com/rest/images?action=initializeUpload"
+    init_payload = {
+        "initializeUploadRequest": {
+            "owner": author_urn
+        }
+    }
+
+    try:
+        init_res = requests.post(init_url, headers=headers, json=init_payload)
+        if init_res.status_code != 200:
+            return ""
+
+        init_data = init_res.json().get("value", {})
+        upload_url = init_data.get("uploadUrl")
+        image_urn = init_data.get("image")
+
+        # 2. رفع ملف الصورة الفعلي
+        with open(image_path, "rb") as img_file:
+            upload_headers = {
+                "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
+                "Content-Type": "image/png"
+            }
+            put_res = requests.put(upload_url, headers=upload_headers, data=img_file)
+            if put_res.status_code in (200, 201):
+                return image_urn
+    except Exception:
+        pass
+
+    return ""
+
 def run_publish_to_linkedin(exact_text: str) -> str:
-    """نشر النص حرفياً إلى لينكد إن."""
+    """نشر الملخص كاملاً إلى لينكد إن مع إرفاق الصورة التعبيرية الثابتة."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز الوصول للينكد إن غير متوفر."
     
@@ -82,6 +125,9 @@ def run_publish_to_linkedin(exact_text: str) -> str:
 
     author_urn = f"urn:li:person:{sub}"
 
+    # رفع الصورة التعبيرية الثابتة
+    image_urn = upload_linkedin_image(author_urn, "post_cover.png")
+
     post_url = "https://api.linkedin.com/rest/posts"
     post_headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -89,6 +135,7 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         "X-Restli-Protocol-Version": "2.0.0",
         "Content-Type": "application/json"
     }
+
     payload = {
         "author": author_urn,
         "commentary": exact_text,
@@ -102,16 +149,24 @@ def run_publish_to_linkedin(exact_text: str) -> str:
         "isReshareDisabledByAuthor": False
     }
 
+    # إرفاق الصورة داخل المنشور إذا تم رفعها بنجاح
+    if image_urn:
+        payload["content"] = {
+            "media": {
+                "id": image_urn
+            }
+        }
+
     try:
         response = requests.post(post_url, headers=post_headers, json=payload)
         if response.status_code == 201:
-            return "تم النشر بنجاح على لينكد إن!"
+            return "تم النشر بنجاح على لينكد إن (شاملاً الصورة التعبيرية والنص الكامل)!"
         else:
             return f"فشل النشر ({response.status_code}): {response.text}"
     except Exception as e:
         return f"خطأ في الاتصال بـ LinkedIn API: {str(e)}"
 
-# تعريف الأدوات لبروتوكول MCP
+# تعريف الأدوات لبروتوكول MCP مع توجيه صارم للنموذج بعدم اختصار النص
 TOOLS_DEFINITION = [
     {
         "name": "get_latest_telegram_post",
@@ -124,13 +179,13 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "post_to_telegram",
-        "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms).",
+        "description": "ينشر نصاً أو ملخصاً كاملاً مباشرة إلى قناة تليجرام (@GuadaraQms).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "message_text": {
                     "type": "string",
-                    "description": "النص أو التلخيص المراد نشره في قناة تليجرام."
+                    "description": "كامل النص أو التلخيص الإداري المراد نشره في قناة تليجرام بالتفصيل."
                 }
             },
             "required": ["message_text"]
@@ -138,13 +193,13 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "publish_to_linkedin",
-        "description": "ينشر النص الأصلي حرفياً إلى لينكد إن دون أي تغيير.",
+        "description": "ينشر النص الكامل والتفصيلي حرفياً إلى لينكد إن مع الصورة التعبيرية المعتمدة تلقائياً. يُمنع منعاً باتاً تمرير العنوان فقط، بل يجب تمرير كامل المنشور بجميع فقراته ونقاطه ووسومه.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "exact_text": {
                     "type": "string",
-                    "description": "النص الكامل للمنشور المراد نشره على لينكد إن."
+                    "description": "النص الكامل والشامل للمنشور بجميع فقراته وتنسيقاته دون اقتصاره على العنوان فقط."
                 }
             },
             "required": ["exact_text"]
@@ -179,7 +234,7 @@ async def handle_mcp_rpc(request: Request):
                 },
                 "serverInfo": {
                     "name": "GuadaraBridge",
-                    "version": "1.1.0"
+                    "version": "1.2.0"
                 }
             }
         }
