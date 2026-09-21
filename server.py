@@ -19,60 +19,36 @@ LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# معرف مجلد Guadara_Books المفتوح للمشاركة
 FOLDER_ID = "1Psax-pgC0M-Ocnv9O3wXZyhjaNUwcWCO"
-
 TIMEZONE = pytz.timezone("Asia/Aden")
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
-# --- دالة جلب قائمة كل الكتب من المجلد عبر Google Drive API ---
-
-def fetch_all_books_from_folder():
-    """جلب قائمة بكل ملفات الـ PDF الموجودة في المجلد (يدعم مئات الكتب)."""
-    api_key = GEMINI_API_KEY.strip() if GEMINI_API_KEY else ""
-    if not api_key:
-        return []
-
-    url = "https://www.googleapis.com/drive/v3/files"
-    params = {
-        "q": f"'{FOLDER_ID}' in parents and mimeType='application/pdf' and trashed=false",
-        "fields": "nextPageToken, files(id, name)",
-        "pageSize": 1000,
-        "key": api_key
-    }
-
-    all_files = []
-    try:
-        while True:
-            resp = requests.get(url, params=params, timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                files = data.get("files", [])
-                for f in files:
-                    all_files.append({"id": f["id"], "title": f["name"].replace(".pdf", "")})
-                page_token = data.get("nextPageToken")
-                if not page_token:
-                    break
-                params["pageToken"] = page_token
-            else:
-                break
-    except Exception as e:
-        print(f"خطأ أثناء جلب قائمة الكتب: {e}")
-
-    return all_files
+# قائمة شاملة بمعرفات كتب مجلد Guadara_Books للاستخدام الفوري والمباشر
+LIBRARY_BOOKS = [
+    {"title": "المواصفة القياسية ISO 14001:2015 لنظم الإدارة البيئية", "id": "1QHWA2ixyV7q_YI6faCQK0-MB7ZKP52c1"},
+    {"title": "مواصفة ISO 19011 الإرشادية لإدارة المراجعة والتدقيق", "id": "1VNtdEwfKqv4XRTt0RLGuA-smvVmK8fBx"},
+    {"title": "مواصفة ISO 45001 لإدارة السلامة والصحة المهنية", "id": "1vmv6riPyg9M-Glxs62m7jOF4xxJNk39M"},
+    {"title": "ترجمة وشرح للمواصفة ISO 45002", "id": "1lYhI1GuN1eVco3lyeDHoVgySfmfGRZRf"},
+    {"title": "المواصفة القياسية ISO/IEC 27001 لأنظمة إدارة أمن المعلومات", "id": "1dpZpHq7X3ZgzbIXC1KejeKoiRRCL79p3"},
+    {"title": "مواصفة الأيزو 22002-1 لبرامج الاشتراطات المسبقة لسلامة الغذاء", "id": "1leLZmJegbrq8xU6tOlvljMPKQQmrWz08"},
+    {"title": "نظم إدارة سلامة الغذاء ISO 22000", "id": "1onjbTW0Seg8NnZmdWRz-0YqWPv1BtOmh"},
+    {"title": "المعيار العالمي للتعبئة والتغليف BRCGS Packaging Issue 7", "id": "1YxlZFN--SPGII2VMNoQZUcHMGUee0yjZ"},
+    {"title": "مواصفة BRC لسلامة الغذاء - الإصدار الثامن", "id": "1yOpD523eFgwgQik62XFazYdtPeL8ka2d"},
+    {"title": "دليل قياس الاستدامة وتقييم الأداء البيئي", "id": "1tcqep-tqpnyHwfi6CpWUcC7WzBzWAfNS"},
+    {"title": "دليل نقاط التحقق للوقاية من الإجهاد في بيئة العمل", "id": "14eDW5YNdTp93WHC66HJVzDSfAs7cLfWL"},
+    {"title": "المواصفات القياسية لفترات صلاحية المنتجات الغذائية", "id": "1055Qlba70lYzaFipLass5e85TAmDC2ui"},
+    {"title": "شرح بنود قائمة اعتماد هيئة سلامة الغذاء للمصانع", "id": "1KpzbtXOR4g466Fyh39tXfTQTmay9Zzny"},
+    {"title": "دورة تدريب المدربين TOT وأساليب العرض والتقديم", "id": "1HbLG34fQ2pTR8agFxANYJgHVm_KfQgtS"},
+    {"title": "مواصفة وتطبيقات علامة الحلال وجودة المنتجات", "id": "1x8NYr_HXqvhYRlZJVjuFP0h03NpnucxG"},
+    {"title": "دليل أساسيات سلامة الغذاء والنظافة المهنية", "id": "1kpJwX8_MmoRhCqE6A5k6yobVAe4bFdlt"},
+    {"title": "أسس ومعايير السلامة المهنية والمخاطر الصناعية", "id": "17KezXDNMafj0CJw5td7c-BEXVDU4COMj"}
+]
 
 # --- دالة استخراج النص من أحد كتب المجلد ---
 
 def get_excerpt_from_drive():
-    """اختيار كتاب عشوائي من الـ 300+ كتاب واستخراج مقطع نصي منه."""
-    books = fetch_all_books_from_folder()
-    
-    # في حال فشل الاستعلام السحابي، يتم استخدام مرجع احتياطي
-    if not books:
-        book_title = "نظم إدارة الجودة والتحسين المستمر"
-        return book_title, ""
-
-    book = random.choice(books)
+    """اختيار كتاب وتنزيل صفحات منه واستخراج النص."""
+    book = random.choice(LIBRARY_BOOKS)
     book_title = book["title"]
     download_url = f"https://drive.google.com/uc?export=download&id={book['id']}"
 
@@ -97,7 +73,7 @@ def get_excerpt_from_drive():
 
     return book_title, ""
 
-# --- دالة التوليد عبر Gemini ---
+# --- دالة التوليد عبر Gemini API ---
 
 def generate_quality_summary() -> str:
     """صياغة منشور مهني تطبيقي دقيق من محتوى الكتاب."""
@@ -110,7 +86,7 @@ def generate_quality_summary() -> str:
     if excerpt:
         prompt = (
             f"أنت خبير استشاري ومراجع معتمد في نظم إدارة الجودة والمواصفات القياسية الدولية.\n"
-            f"قم بصياغة منشور مهني احترافي متكامل (بين 250 و350 كلمة) مستخلص مباشرة من هذا المرجع:\n"
+            f"قم بصياغة منشور مهني احترافي متكامل (بين 150 و250 كلمة) مستخلص مباشرة من هذا المرجع:\n"
             f"المرجع: {book_title}\n\n"
             f"النص المستخرج من الكتاب:\n\"\"\"\n{excerpt}\n\"\"\"\n\n"
             f"شروط المنشور:\n"
@@ -118,23 +94,26 @@ def generate_quality_summary() -> str:
             f"2. استخلص الفكرة الإدارية أو المتطلب القياسي في نقاط عملية مركزة قابلة للتطبيق المؤسسي الفوري.\n"
             f"3. اذكر اسم المرجع في السطر الأخير بدقة: (المصدر: {book_title}).\n"
             f"4. ضع وسوم مهنية مناسبة (#إدارة_الجودة #المواصفات_الدولية #التميز_المؤسسي).\n"
-            f"5. لا تضف أي مقدمات أو تعليقات دردشة، اجعل النص جاهزاً تماماً للنشر المباشر."
+            f"5. لا تضف أي مقدمات أو تعليقات جانبية، اجعل النص جاهزاً تماماً للنشر المباشر."
         )
     else:
         prompt = (
-            f"أنت خبير استشاري في نظم إدارة الجودة.\n"
-            f"اكتب منشوراً مهنياً عملياً ومحكماً (بين 150 و250 كلمة) حول أحد المبادئ التطبيقية الهامة في:\n"
+            f"أنت خبير استشاري في نظم إدارة الجودة والمواصفات القياسية.\n"
+            f"اكتب منشوراً مهنياً عملياً ومحكماً (بين 150 و250 كلمة) حول أحد المبادئ التطبيقية الهامة في مرجع:\n"
             f"({book_title}).\n"
             f"اجعل النص في نقاط عملية واختم بالمرجع والوسوم المهنية دون مقدمات جانبية."
         )
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key
+    }
 
+    # النماذج الرسمية المتوافقة مع المفتاح
     candidate_urls = [
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}",
         f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
-        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
     ]
 
     last_error = ""
@@ -269,8 +248,8 @@ def run_publish_to_linkedin(exact_text: str) -> str:
 # --- دورة النشر المستقلة المجدولة ---
 
 async def scheduled_publishing_cycle():
-    """دورة النشر الكاملة: استكشاف الكتب -> قراءة واقتباس -> تلخيص -> نشر."""
-    print("بدء دورة التلخيص والنشر الشاملة من مكتبة Google Drive...")
+    """دورة النشر الكاملة: قراءة الكتاب -> تلخيص -> نشر."""
+    print("بدء دورة التلخيص والنشر من كتب Google Drive...")
     summary_text = generate_quality_summary()
 
     tg_result = await run_post_to_telegram(summary_text)
