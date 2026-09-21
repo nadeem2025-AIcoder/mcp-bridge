@@ -1,47 +1,40 @@
 import os
+import re
+import html
 import requests
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from telegram import Bot
+from mcp.server.fastmcp import FastMCP
 
-# المسار المطلق للصورة في نفس مجلد المشروع على Railway
+# تحديد مسار الصورة والتحميل الاحتياطي من GitHub
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
 
+# جلب بيانات الاعتماد من متغيرات البيئة في Railway
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "").strip()
+PORT = int(os.getenv("PORT", 8080))
 
-app = FastAPI(title="Spark-Publishing-Bridge")
+# تهيئة خادم بروتوكول MCP
+mcp = FastMCP("GuadaraBridge", host="0.0.0.0", port=PORT)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def ensure_cover_image():
+    """التحقق من وجود صورة الغلاف محلياً أو تنزيلها تلقائياً من GitHub."""
+    if not os.path.exists(IMAGE_PATH):
+        try:
+            raw_url = "https://raw.githubusercontent.com/nadeem2025-AIcoder/mcp-bridge/main/post_cover.png"
+            res = requests.get(raw_url, timeout=15)
+            if res.status_code == 200:
+                with open(IMAGE_PATH, "wb") as f:
+                    f.write(res.content)
+        except Exception:
+            pass
 
-class PublishPayload(BaseModel):
-    text: str
-
-async def post_to_telegram(text: str) -> str:
-    """نشر المنشور إلى تليجرام كنص فقط دون صورة."""
-    if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
-        return "خطأ: بيانات تليجرام غير مكتملة."
-    try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        msg = await bot.send_message(chat_id=CHANNEL_ID, text=text)
-        return f"تم النشر في تليجرام بنجاح (ID: {msg.message_id})"
-    except Exception as e:
-        return f"خطأ تليجرام: {str(e)}"
-
-def upload_linkedin_image(author_urn: str, image_path: str = IMAGE_PATH) -> str:
+def upload_linkedin_image(author_urn: str) -> str:
     """رفع صورة الغلاف التعبيرية إلى خوادم لينكد إن."""
-    if not os.path.exists(image_path) or not LINKEDIN_ACCESS_TOKEN:
+    ensure_cover_image()
+    if not os.path.exists(IMAGE_PATH) or not LINKEDIN_ACCESS_TOKEN:
         return ""
     headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -58,13 +51,13 @@ def upload_linkedin_image(author_urn: str, image_path: str = IMAGE_PATH) -> str:
             upload_url = init_data.get("uploadUrl")
             image_urn = init_data.get("image")
             
-            with open(image_path, "rb") as img_file:
-                # ملاحظة هامة: لا نضع هيدر Authorization في طلب PUT المباشر للرابط المؤقت
+            with open(IMAGE_PATH, "rb") as img_file:
+                # لا نرسل هيدر Authorization إلى رابط الرفع المؤقت Pre-signed S3
                 put_res = requests.put(
                     upload_url,
                     headers={"Content-Type": "image/png"},
                     data=img_file,
-                    timeout=25
+                    timeout=30
                 )
                 if put_res.status_code in (200, 201):
                     return image_urn
@@ -72,8 +65,47 @@ def upload_linkedin_image(author_urn: str, image_path: str = IMAGE_PATH) -> str:
         pass
     return ""
 
-def post_to_linkedin(text: str, image_path: str = IMAGE_PATH) -> str:
-    """نشر المنشور على حساب لينكد إن مع صورة الغلاف حصراً."""
+@mcp.tool(
+    name="get_latest_telegram_post",
+    description="يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام."
+)
+def get_latest_telegram_post() -> str:
+    """قراءة آخر منشور من واجهة القناة العامة على تليجرام."""
+    try:
+        url = "https://t.me/s/GuadaraQms"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if res.status_code == 200:
+            matches = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', res.text, re.DOTALL)
+            if matches:
+                last_msg = matches[-1]
+                clean = re.sub(r'<br\s*/?>', '\n', last_msg)
+                clean = re.sub(r'<[^>]+>', '', clean)
+                return html.unescape(clean).strip()
+    except Exception as e:
+        return f"تعذر جلب المنشور: {str(e)}"
+    return "لا توجد منشورات متاحة حالياً."
+
+@mcp.tool(
+    name="post_to_telegram",
+    description="ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms)."
+)
+async def post_to_telegram(message_text: str) -> str:
+    """نشر نصي فقط على تليجرام دون صورة."""
+    if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
+        return "خطأ: بيانات تليجرام غير مكتملة."
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        msg = await bot.send_message(chat_id=CHANNEL_ID, text=message_text)
+        return f"تم النشر في قناة تليجرام بنجاح! معرف الرسالة: {msg.message_id}"
+    except Exception as e:
+        return f"خطأ تليجرام: {str(e)}"
+
+@mcp.tool(
+    name="publish_to_linkedin",
+    description="ينشر النص الأصلي حرفياً إلى لينكد إن دون أي تغيير."
+)
+def publish_to_linkedin(exact_text: str) -> str:
+    """نشر المنشور على لينكد إن مع إرفاق صورة الغلاف حصراً."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز وصول لينكد إن غير متوفر."
     auth_headers = {"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"}
@@ -101,7 +133,7 @@ def post_to_linkedin(text: str, image_path: str = IMAGE_PATH) -> str:
         return "خطأ: تعذر تحديد معرف المستخدم لـ LinkedIn."
 
     author_urn = f"urn:li:person:{sub}"
-    image_urn = upload_linkedin_image(author_urn, image_path)
+    image_urn = upload_linkedin_image(author_urn)
 
     post_url = "https://api.linkedin.com/rest/posts"
     post_headers = {
@@ -112,7 +144,7 @@ def post_to_linkedin(text: str, image_path: str = IMAGE_PATH) -> str:
     }
     payload = {
         "author": author_urn,
-        "commentary": text,
+        "commentary": exact_text,
         "visibility": "PUBLIC",
         "distribution": {
             "feedDistribution": "MAIN_FEED",
@@ -136,21 +168,5 @@ def post_to_linkedin(text: str, image_path: str = IMAGE_PATH) -> str:
     except Exception as e:
         return f"خطأ اتصال لينكد إن: {str(e)}"
 
-@app.get("/")
-@app.get("/health")
-def health():
-    return {"status": "ready", "bridge": "active"}
-
-@app.post("/publish")
-async def publish(payload: PublishPayload):
-    """نشر نصي فقط في تليجرام، ونشر مع صورة الغلاف حصراً في لينكد إن."""
-    tg_res = await post_to_telegram(payload.text)
-    li_res = post_to_linkedin(payload.text, IMAGE_PATH)
-    return {
-        "telegram": tg_res,
-        "linkedin": li_res
-    }
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    mcp.run(transport="sse")
