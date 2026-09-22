@@ -1,7 +1,6 @@
 import os
 import re
 import html
-import glob
 import json
 import random
 import datetime
@@ -11,7 +10,6 @@ import pytz
 from pypdf import PdfReader
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -39,17 +37,28 @@ app.add_middleware(
 scheduler = AsyncIOScheduler()
 
 def find_all_pdf_files() -> list:
-    """البحث المتشعب والشامل عن كافة ملفات الـ PDF في كل المجلدات والمجلدات الفرعية."""
-    files = []
-    for pattern in ("**/*.pdf", "**/*.PDF", "**/*.Pdf"):
-        files.extend(glob.glob(os.path.join(BASE_DIR, pattern), recursive=True))
+    """البحث الدقيق والشامل عن كافة ملفات PDF مهما كان عمق المجلدات أو حالة الحروف أو اللغة."""
+    search_roots = [
+        BASE_DIR,
+        os.getcwd(),
+        "/app",
+        os.path.join(os.getcwd(), "books"),
+        os.path.join(BASE_DIR, "books")
+    ]
+    matched = []
     seen = set()
-    unique_files = []
-    for f in files:
-        if f not in seen and "site-packages" not in f and ".venv" not in f:
-            seen.add(f)
-            unique_files.append(f)
-    return unique_files
+    for s_root in search_roots:
+        if os.path.exists(s_root):
+            for root, dirs, files in os.walk(s_root):
+                if any(x in root for x in ("site-packages", ".venv", ".git")):
+                    continue
+                for file in files:
+                    if file.lower().endswith(".pdf"):
+                        full_path = os.path.join(root, file)
+                        if full_path not in seen:
+                            seen.add(full_path)
+                            matched.append(full_path)
+    return matched
 
 def load_history() -> list:
     if os.path.exists(HISTORY_FILE):
@@ -216,7 +225,6 @@ def extract_content_from_random_book() -> tuple:
     return "", "تعذر استخراج نص كافٍ"
 
 def generate_summary_with_gemini(raw_book_text: str, book_name: str) -> str:
-    """توليد الملخص الرصين عبر Gemini API وفق المعايير الصارمة وبلا أقواس."""
     prompt = f"""أنت خبير استشاري أول في نظم إدارة الجودة، التميز المؤسسي، والتطوير الإداري لشركة جدارا.
 بناءً على النص المرفق حصراً والمستخرج من كتاب ({book_name}):
 
@@ -249,7 +257,6 @@ def generate_summary_with_gemini(raw_book_text: str, book_name: str) -> str:
     return ""
 
 async def execute_scheduled_cycle():
-    """تنفيذ دورة التلخيص والنشر الذاتية الكاملة."""
     print(f"[{datetime.datetime.now()}] بدء دورة النشر التلقائية...")
     raw_text, book_name = extract_content_from_random_book()
     if not raw_text:
@@ -298,7 +305,7 @@ def health():
         "bridge": "active",
         "scheduler": "running",
         "books_count": len(pdf_files),
-        "sample_books": [os.path.basename(f) for f in pdf_files[:5]]
+        "sample_books": [os.path.basename(f) for f in pdf_files[:10]]
     }
 
 @app.get("/run-now")
