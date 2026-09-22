@@ -17,7 +17,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BOOKS_DIR = os.path.join(BASE_DIR, "books")
 IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 
@@ -38,6 +37,19 @@ app.add_middleware(
 )
 
 scheduler = AsyncIOScheduler()
+
+def find_all_pdf_files() -> list:
+    """البحث المتشعب والشامل عن كافة ملفات الـ PDF في كل المجلدات والمجلدات الفرعية."""
+    files = []
+    for pattern in ("**/*.pdf", "**/*.PDF", "**/*.Pdf"):
+        files.extend(glob.glob(os.path.join(BASE_DIR, pattern), recursive=True))
+    seen = set()
+    unique_files = []
+    for f in files:
+        if f not in seen and "site-packages" not in f and ".venv" not in f:
+            seen.add(f)
+            unique_files.append(f)
+    return unique_files
 
 def load_history() -> list:
     if os.path.exists(HISTORY_FILE):
@@ -140,7 +152,6 @@ def publish_to_linkedin(exact_text: str) -> str:
     author_urn = f"urn:li:person:{sub}"
     image_urn = upload_linkedin_image(author_urn)
 
-    # معالجة الأقواس والرموز المحجوزة لحماية النص من البتر
     safe_text = re.sub(r'([(){}\[\]<>|~_*])', r'\\\1', exact_text)
 
     post_url = "https://api.linkedin.com/rest/posts"
@@ -177,10 +188,10 @@ def publish_to_linkedin(exact_text: str) -> str:
         return f"خطأ اتصال لينكد إن: {str(e)}"
 
 def extract_content_from_random_book() -> tuple:
-    """استخراج عينة نصية حقيقية من أحد كتب مجلد books."""
-    pdf_files = glob.glob(os.path.join(BOOKS_DIR, "*.pdf"))
+    """استخراج نص حقيقي من الكتب المكتشفة في المشروع."""
+    pdf_files = find_all_pdf_files()
     if not pdf_files:
-        return "", "لا توجد ملفات PDF في مجلد books"
+        return "", "لا توجد ملفات PDF في المستودع"
     
     random.shuffle(pdf_files)
     for pdf_path in pdf_files:
@@ -191,7 +202,6 @@ def extract_content_from_random_book() -> tuple:
             if num_pages == 0:
                 continue
             
-            # قراءة عينة متتابعة من الصفحات
             start_page = random.randint(min(5, num_pages - 1), max(0, num_pages - 4))
             extracted_text = ""
             for p in range(start_page, min(start_page + 4, num_pages)):
@@ -206,7 +216,7 @@ def extract_content_from_random_book() -> tuple:
     return "", "تعذر استخراج نص كافٍ"
 
 def generate_summary_with_gemini(raw_book_text: str, book_name: str) -> str:
-    """توليد الملخص المهني بالمعايير الصارمة عبر Gemini API."""
+    """توليد الملخص الرصين عبر Gemini API وفق المعايير الصارمة وبلا أقواس."""
     prompt = f"""أنت خبير استشاري أول في نظم إدارة الجودة، التميز المؤسسي، والتطوير الإداري لشركة جدارا.
 بناءً على النص المرفق حصراً والمستخرج من كتاب ({book_name}):
 
@@ -239,8 +249,8 @@ def generate_summary_with_gemini(raw_book_text: str, book_name: str) -> str:
     return ""
 
 async def execute_scheduled_cycle():
-    """الدورة الذاتية الكاملة للقراءة، التلخيص، والنشر."""
-    print(f"[{datetime.datetime.now()}] بدء دورة النشر التلقائية من كتب المستودع...")
+    """تنفيذ دورة التلخيص والنشر الذاتية الكاملة."""
+    print(f"[{datetime.datetime.now()}] بدء دورة النشر التلقائية...")
     raw_text, book_name = extract_content_from_random_book()
     if not raw_text:
         print("خطأ: لم يتم العثور على محتوى من الكتب.")
@@ -251,15 +261,12 @@ async def execute_scheduled_cycle():
         print("خطأ: تعذر توليد الملخص من Gemini.")
         return
     
-    # 1. النشر على تليجرام
     tg_res = await post_to_telegram(summary)
     print("Telegram:", tg_res)
     
-    # 2. النشر على لينكد إن
     li_res = publish_to_linkedin(summary)
     print("LinkedIn:", li_res)
     
-    # توثيق في سجل التاريخ
     save_history({
         "timestamp": datetime.datetime.now().isoformat(),
         "book": book_name,
@@ -267,12 +274,11 @@ async def execute_scheduled_cycle():
         "telegram": tg_res,
         "linkedin": li_res
     })
-    print("اكتملت دورة النشر بنجاح تام.")
+    print("اكتملت دورة النشر بنجاح.")
 
 @app.on_event("startup")
 async def start_scheduler():
     ensure_cover_image()
-    # الجدولة الذاتية: 9:00 صباحاً، 2:00 ظهراً، و8:00 مساءً بتوقيت عدن
     timezone = pytz.timezone("Asia/Aden")
     scheduler.add_job(
         execute_scheduled_cycle,
@@ -281,28 +287,29 @@ async def start_scheduler():
         replace_existing=True
     )
     scheduler.start()
-    print("APScheduler started: Runs at 9:00, 14:00, 20:00 (Asia/Aden).")
+    print("APScheduler started: 9:00, 14:00, 20:00 (Asia/Aden).")
 
 @app.get("/")
 @app.get("/health")
 def health():
+    pdf_files = find_all_pdf_files()
     return {
         "status": "ready",
         "bridge": "active",
         "scheduler": "running",
-        "books_count": len(glob.glob(os.path.join(BOOKS_DIR, "*.pdf")))
+        "books_count": len(pdf_files),
+        "sample_books": [os.path.basename(f) for f in pdf_files[:5]]
     }
 
 @app.get("/run-now")
 @app.post("/run-now")
 async def trigger_now():
-    """مسار اختياري لتجربة دورة نشر فورية في أي وقت عبر المتصفح."""
+    """مسار التجربة الفورية السريعة."""
     await execute_scheduled_cycle()
     return {"status": "success", "message": "Cycle executed successfully"}
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
-    """دعم بروتوكول MCP الكامل إذا أردت استدعاءه يدوياً."""
     try:
         data = await request.json()
     except Exception:
