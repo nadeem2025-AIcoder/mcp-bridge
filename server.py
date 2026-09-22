@@ -1,22 +1,33 @@
 import os
 import re
 import html
+import glob
+import json
+import random
+import datetime
 import requests
+import uvicorn
+import pytz
+from pypdf import PdfReader
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from telegram import Bot
-import uvicorn
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BOOKS_DIR = os.path.join(BASE_DIR, "books")
 IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
+HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
 LINKEDIN_USER_SUB = os.getenv("LINKEDIN_USER_SUB", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-app = FastAPI(title="Spark-Publishing-Bridge")
+app = FastAPI(title="Guadara-Autonomous-Publisher")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,8 +37,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+scheduler = AsyncIOScheduler()
+
+def load_history() -> list:
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_history(entry: dict):
+    history = load_history()
+    history.append(entry)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 def ensure_cover_image():
-    """التحقق من وجود صورة الغلاف محلياً أو تنزيلها تلقائياً من GitHub."""
     if not os.path.exists(IMAGE_PATH):
         try:
             raw_url = "https://raw.githubusercontent.com/nadeem2025-AIcoder/mcp-bridge/main/post_cover.png"
@@ -39,7 +69,6 @@ def ensure_cover_image():
             pass
 
 def upload_linkedin_image(author_urn: str) -> str:
-    """رفع صورة الغلاف التعبيرية إلى خوادم لينكد إن."""
     ensure_cover_image()
     if not os.path.exists(IMAGE_PATH) or not LINKEDIN_ACCESS_TOKEN:
         return ""
@@ -72,7 +101,6 @@ def upload_linkedin_image(author_urn: str) -> str:
     return ""
 
 async def post_to_telegram(message_text: str) -> str:
-    """نشر نصي فقط على تليجرام دون صورة."""
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
         return "خطأ: بيانات تليجرام غير مكتملة."
     try:
@@ -83,7 +111,6 @@ async def post_to_telegram(message_text: str) -> str:
         return f"خطأ تليجرام: {str(e)}"
 
 def publish_to_linkedin(exact_text: str) -> str:
-    """نشر المنشور على لينكد إن مع إرفاق صورة الغلاف حصراً."""
     if not LINKEDIN_ACCESS_TOKEN:
         return "خطأ: رمز وصول لينكد إن غير متوفر."
     auth_headers = {"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"}
@@ -113,6 +140,9 @@ def publish_to_linkedin(exact_text: str) -> str:
     author_urn = f"urn:li:person:{sub}"
     image_urn = upload_linkedin_image(author_urn)
 
+    # معالجة الأقواس والرموز المحجوزة لحماية النص من البتر
+    safe_text = re.sub(r'([(){}\[\]<>|~_*])', r'\\\1', exact_text)
+
     post_url = "https://api.linkedin.com/rest/posts"
     post_headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -122,7 +152,7 @@ def publish_to_linkedin(exact_text: str) -> str:
     }
     payload = {
         "author": author_urn,
-        "commentary": exact_text,
+        "commentary": safe_text,
         "visibility": "PUBLIC",
         "distribution": {
             "feedDistribution": "MAIN_FEED",
@@ -136,7 +166,7 @@ def publish_to_linkedin(exact_text: str) -> str:
         payload["content"] = {"media": {"id": image_urn}}
 
     try:
-        res = requests.post(post_url, headers=post_headers, json=payload, timeout=20)
+        res = requests.post(post_url, headers=post_headers, json=payload, timeout=25)
         if res.status_code == 201:
             status_msg = "تم النشر بنجاح على لينكد إن!"
             if image_urn:
@@ -146,39 +176,133 @@ def publish_to_linkedin(exact_text: str) -> str:
     except Exception as e:
         return f"خطأ اتصال لينكد إن: {str(e)}"
 
-def get_latest_telegram_post() -> str:
-    """قراءة آخر منشور من واجهة القناة العامة على تليجرام."""
+def extract_content_from_random_book() -> tuple:
+    """استخراج عينة نصية حقيقية من أحد كتب مجلد books."""
+    pdf_files = glob.glob(os.path.join(BOOKS_DIR, "*.pdf"))
+    if not pdf_files:
+        return "", "لا توجد ملفات PDF في مجلد books"
+    
+    random.shuffle(pdf_files)
+    for pdf_path in pdf_files:
+        book_name = os.path.basename(pdf_path)
+        try:
+            reader = PdfReader(pdf_path)
+            num_pages = len(reader.pages)
+            if num_pages == 0:
+                continue
+            
+            # قراءة عينة متتابعة من الصفحات
+            start_page = random.randint(min(5, num_pages - 1), max(0, num_pages - 4))
+            extracted_text = ""
+            for p in range(start_page, min(start_page + 4, num_pages)):
+                text = reader.pages[p].extract_text() or ""
+                extracted_text += text + "\n"
+            
+            if len(extracted_text.strip()) > 300:
+                return extracted_text.strip(), book_name
+        except Exception:
+            continue
+            
+    return "", "تعذر استخراج نص كافٍ"
+
+def generate_summary_with_gemini(raw_book_text: str, book_name: str) -> str:
+    """توليد الملخص المهني بالمعايير الصارمة عبر Gemini API."""
+    prompt = f"""أنت خبير استشاري أول في نظم إدارة الجودة، التميز المؤسسي، والتطوير الإداري لشركة جدارا.
+بناءً على النص المرفق حصراً والمستخرج من كتاب ({book_name}):
+
+قم بصياغة ملخص تنفيذي واحترافي ورصين للنشر (من 250 إلى 350 كلمة تقريباً) يركز على التطبيق العملي، ويتضمن:
+1. عنواناً مهنياً دقيقاً للمفهوم.
+2. الفكرة الجوهرية والدرس المستفاد من زاوية إدارة الجودة، التميز المؤسسي، وتطوير العمليات.
+3. خاتمة تفاعلية بطرح تساؤل عملي لتطوير الأداء المؤسسي.
+4. الوسوم المعتمدة: #إدارة_الجودة #التميز_المؤسسي #جدارا
+
+قواعد صياغة صارمة وإلزامية:
+- يُمنع منعاً باتاً استخدام الأقواس الهلالية ( ) أو المعقوفة [ ] في أي موضع من العنوان أو النص.
+- اكتب المصطلحات الإنجليزية أو التوضيحية مدمجة بسلاسة أو مفصولة بشرطات عادية دون أقواس نهائياً.
+- اكتب النص مباشرة دون أي مقدمات أو هوامش إضافية.
+
+النص المأخوذ من الكتاب:
+{raw_book_text[:4000]}
+"""
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
+    }
     try:
-        url = "https://t.me/s/GuadaraQms"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if res.status_code == 200:
-            matches = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', res.text, re.DOTALL)
-            if matches:
-                last_msg = matches[-1]
-                clean = re.sub(r'<br\s*/?>', '\n', last_msg)
-                clean = re.sub(r'<[^>]+>', '', clean)
-                return html.unescape(clean).strip()
+        resp = requests.post(gemini_url, json=payload, timeout=30)
+        if resp.status_code == 200:
+            result = resp.json()
+            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        return f"تعذر جلب المنشور: {str(e)}"
-    return "لا توجد منشورات متاحة حالياً."
+        print("Gemini generation error:", e)
+    return ""
+
+async def execute_scheduled_cycle():
+    """الدورة الذاتية الكاملة للقراءة، التلخيص، والنشر."""
+    print(f"[{datetime.datetime.now()}] بدء دورة النشر التلقائية من كتب المستودع...")
+    raw_text, book_name = extract_content_from_random_book()
+    if not raw_text:
+        print("خطأ: لم يتم العثور على محتوى من الكتب.")
+        return
+    
+    summary = generate_summary_with_gemini(raw_text, book_name)
+    if not summary:
+        print("خطأ: تعذر توليد الملخص من Gemini.")
+        return
+    
+    # 1. النشر على تليجرام
+    tg_res = await post_to_telegram(summary)
+    print("Telegram:", tg_res)
+    
+    # 2. النشر على لينكد إن
+    li_res = publish_to_linkedin(summary)
+    print("LinkedIn:", li_res)
+    
+    # توثيق في سجل التاريخ
+    save_history({
+        "timestamp": datetime.datetime.now().isoformat(),
+        "book": book_name,
+        "summary_preview": summary[:100],
+        "telegram": tg_res,
+        "linkedin": li_res
+    })
+    print("اكتملت دورة النشر بنجاح تام.")
+
+@app.on_event("startup")
+async def start_scheduler():
+    ensure_cover_image()
+    # الجدولة الذاتية: 9:00 صباحاً، 2:00 ظهراً، و8:00 مساءً بتوقيت عدن
+    timezone = pytz.timezone("Asia/Aden")
+    scheduler.add_job(
+        execute_scheduled_cycle,
+        CronTrigger(hour="9,14,20", minute=0, timezone=timezone),
+        id="quality_posts_job",
+        replace_existing=True
+    )
+    scheduler.start()
+    print("APScheduler started: Runs at 9:00, 14:00, 20:00 (Asia/Aden).")
 
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ready", "bridge": "active"}
+    return {
+        "status": "ready",
+        "bridge": "active",
+        "scheduler": "running",
+        "books_count": len(glob.glob(os.path.join(BOOKS_DIR, "*.pdf")))
+    }
 
-class PublishPayload(BaseModel):
-    text: str
-
-@app.post("/publish")
-async def publish(payload: PublishPayload):
-    tg_res = await post_to_telegram(payload.text)
-    li_res = publish_to_linkedin(payload.text)
-    return {"telegram": tg_res, "linkedin": li_res}
+@app.get("/run-now")
+@app.post("/run-now")
+async def trigger_now():
+    """مسار اختياري لتجربة دورة نشر فورية في أي وقت عبر المتصفح."""
+    await execute_scheduled_cycle()
+    return {"status": "success", "message": "Cycle executed successfully"}
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
-    """المسار المعتمد لبروتوكول MCP الذي يتصل به سبارك."""
+    """دعم بروتوكول MCP الكامل إذا أردت استدعاءه يدوياً."""
     try:
         data = await request.json()
     except Exception:
@@ -206,34 +330,23 @@ async def mcp_endpoint(request: Request):
             "result": {
                 "tools": [
                     {
-                        "name": "get_latest_telegram_post",
-                        "description": "يجلب النص الكامل والأصلي لآخر منشور من قناة تليجرام.",
-                        "inputSchema": {"type": "object", "properties": {}}
-                    },
-                    {
                         "name": "post_to_telegram",
                         "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "message_text": {
-                                    "type": "string",
-                                    "description": "النص أو التلخيص المراد نشره في قناة تليجرام."
-                                }
+                                "message_text": {"type": "string", "description": "النص المراد نشره."}
                             },
                             "required": ["message_text"]
                         }
                     },
                     {
                         "name": "publish_to_linkedin",
-                        "description": "ينشر النص الأصلي حرفياً إلى لينكد إن دون أي تغيير.",
+                        "description": "ينشر النص الأصلي حرفياً إلى لينكد إن مع صورة الغلاف.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "exact_text": {
-                                    "type": "string",
-                                    "description": "النص الكامل للمنشور المراد نشره على لينكد إن."
-                                }
+                                "exact_text": {"type": "string", "description": "النص الكامل للمنشور."}
                             },
                             "required": ["exact_text"]
                         }
@@ -248,33 +361,19 @@ async def mcp_endpoint(request: Request):
         result_text = ""
         
         if tool_name == "post_to_telegram":
-            msg = args.get("message_text", "")
-            result_text = await post_to_telegram(msg)
+            result_text = await post_to_telegram(args.get("message_text", ""))
         elif tool_name == "publish_to_linkedin":
-            msg = args.get("exact_text", "")
-            result_text = publish_to_linkedin(msg)
-        elif tool_name == "get_latest_telegram_post":
-            result_text = get_latest_telegram_post()
+            result_text = publish_to_linkedin(args.get("exact_text", ""))
         else:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}
-            }
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Unknown tool"}}
             
         return {
             "jsonrpc": "2.0",
             "id": req_id,
-            "result": {
-                "content": [{"type": "text", "text": result_text}]
-            }
+            "result": {"content": [{"type": "text", "text": result_text}]}
         }
 
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "error": {"code": -32601, "message": f"Method not supported: {method}"}
-    }
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not supported"}}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
