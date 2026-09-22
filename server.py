@@ -17,6 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGE_PATH = os.path.join(BASE_DIR, "post_cover.png")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
+# تحديد مسار مجلد الكتب بصورة مباشرة وصحيحة
+BOOKS_DIR = os.path.join(BASE_DIR, "books")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
@@ -37,16 +39,17 @@ app.add_middleware(
 scheduler = AsyncIOScheduler()
 
 def find_all_pdf_files() -> list:
-    """البحث الدقيق والشامل عن كافة ملفات PDF مهما كان عمق المجلدات أو حالة الحروف أو اللغة."""
-    search_roots = [
-        BASE_DIR,
-        os.getcwd(),
-        "/app",
-        os.path.join(os.getcwd(), "books"),
-        os.path.join(BASE_DIR, "books")
-    ]
+    """البحث المباشر والشامل عن كافة ملفات PDF داخل مجلد books ومجلدات المشروع."""
     matched = []
     seen = set()
+    
+    # قائمة المسارات المحتملة للبحث لضمان إيجاد الكتب بكل الظروف
+    search_roots = [
+        BOOKS_DIR,
+        BASE_DIR,
+        os.path.join(os.getcwd(), "books")
+    ]
+    
     for s_root in search_roots:
         if os.path.exists(s_root):
             for root, dirs, files in os.walk(s_root):
@@ -300,8 +303,7 @@ async def start_scheduler():
 @app.get("/health")
 def health():
     pdf_files = find_all_pdf_files()
-    current_files = os.listdir(BASE_DIR) if os.path.exists(BASE_DIR) else []
-    cwd_files = os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else []
+    books_in_dir = os.listdir(BOOKS_DIR) if os.path.exists(BOOKS_DIR) else []
     
     return {
         "status": "ready",
@@ -310,9 +312,9 @@ def health():
         "books_count": len(pdf_files),
         "sample_books": [os.path.basename(f) for f in pdf_files[:10]],
         "BASE_DIR": BASE_DIR,
-        "CWD": os.getcwd(),
-        "files_in_base": current_files,
-        "files_in_cwd": cwd_files
+        "BOOKS_DIR": BOOKS_DIR,
+        "books_directory_exists": os.path.exists(BOOKS_DIR),
+        "files_in_books_folder": books_in_dir[:10]
     }
 
 @app.get("/run-now")
@@ -352,7 +354,7 @@ async def mcp_endpoint(request: Request):
                 "tools": [
                     {
                         "name": "post_to_telegram",
-                        "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة (@GuadaraQms).",
+                        "description": "ينشر نصاً أو ملخصاً مباشرة إلى قناة تليجرام المحددة.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
