@@ -300,12 +300,19 @@ async def start_scheduler():
 @app.get("/health")
 def health():
     pdf_files = find_all_pdf_files()
+    current_files = os.listdir(BASE_DIR) if os.path.exists(BASE_DIR) else []
+    cwd_files = os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else []
+    
     return {
         "status": "ready",
         "bridge": "active",
         "scheduler": "running",
         "books_count": len(pdf_files),
-        "sample_books": [os.path.basename(f) for f in pdf_files[:10]]
+        "sample_books": [os.path.basename(f) for f in pdf_files[:10]],
+        "BASE_DIR": BASE_DIR,
+        "CWD": os.getcwd(),
+        "files_in_base": current_files,
+        "files_in_cwd": cwd_files
     }
 
 @app.get("/run-now")
