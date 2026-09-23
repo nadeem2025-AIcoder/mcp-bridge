@@ -1,9 +1,5 @@
-mcp<2
 fastapi
 uvicorn
 requests
 python-telegram-bot
-apscheduler
-pytz
-pypdf
-google-genai
+pydantic
